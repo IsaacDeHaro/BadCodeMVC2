@@ -1,0 +1,1239 @@
+Para separar la lógica de negocio del controlador en la plataforma de adopción de plantas raras, trasladaremos las operaciones relacionadas con la adopción y registro de plantas a un servicio independiente. Este servicio gestionará todas las operaciones de negocio y dejará al controlador solo con la tarea de manejar las solicitudes y respuestas HTTP.
+
+### Paso 1: Crear un Servicio de Negocio para la Adopción de Plantas
+
+1. Crea una carpeta llamada `Services` en el proyecto.
+2. Dentro de esta carpeta, crea una interfaz `IPlantService` y una clase `PlantService` que implemente esta interfaz.
+
+#### Interfaz `IPlantService`
+
+Define los métodos que el servicio de adopción de plantas debería proporcionar:
+
+```csharp
+using PlantAdoption.Models;
+using System.Collections.Generic;
+
+namespace PlantAdoption.Services
+{
+    public interface IPlantService
+    {
+        IEnumerable<Plant> GetAllPlants();
+        Plant GetPlantById(int id);
+        void AdoptPlant(Plant plant);
+    }
+}
+```
+
+#### Clase `PlantService`
+
+Esta clase contendrá toda la lógica de negocio, incluida la interacción con `DatabaseContext` para las operaciones de adopción de plantas y de obtención de datos.
+
+```csharp
+using PlantAdoption.Data;
+using PlantAdoption.Models;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace PlantAdoption.Services
+{
+    public class PlantService : IPlantService
+    {
+        private readonly DatabaseContext _db;
+
+        public PlantService(DatabaseContext db)
+        {
+            _db = db;
+        }
+
+        public IEnumerable<Plant> GetAllPlants()
+        {
+            // Obtener todas las plantas en una sola consulta
+            return _db.Plants.ToList();
+        }
+
+        public Plant GetPlantById(int id)
+        {
+            // Obtener una planta específica por su ID
+            return _db.Plants.Find(id);
+        }
+
+        public void AdoptPlant(Plant plant)
+        {
+            // Establecer la fecha de adopción y guardar en la base de datos
+            plant.AdoptionDate = DateTime.Now;
+            _db.Plants.Add(plant);
+            _db.SaveChanges();
+        }
+    }
+}
+```
+
+### Paso 2: Modificar el Controlador para Usar el Servicio
+
+Modificaremos `PlantController` para que dependa de `IPlantService` en lugar de manejar directamente `DatabaseContext`. Esto permitirá que el controlador solo actúe como intermediario entre las solicitudes HTTP y el servicio.
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using PlantAdoption.Models;
+using PlantAdoption.Services;
+using System.Collections.Generic;
+
+namespace PlantAdoption.Controllers
+{
+    public class PlantController : Controller
+    {
+        private readonly IPlantService _plantService;
+
+        public PlantController(IPlantService plantService)
+        {
+            _plantService = plantService;
+        }
+
+        public IActionResult Index()
+        {
+            // Llamada al servicio para obtener la lista de plantas
+            var plantsList = _plantService.GetAllPlants();
+            return View(plantsList);
+        }
+
+        public IActionResult Details(int id)
+        {
+            // Llamada al servicio para obtener detalles de la planta
+            var plant = _plantService.GetPlantById(id);
+            if (plant == null)
+            {
+                return NotFound("Planta no encontrada");
+            }
+            return View(plant);
+        }
+
+        [HttpPost]
+        public IActionResult Adopt(Plant plant)
+        {
+            if (!ModelState.IsValid)
+            {
+                return View(plant);
+            }
+
+            // Llamada al servicio para adoptar la planta
+            _plantService.AdoptPlant(plant);
+            return RedirectToAction("Index");
+        }
+    }
+}
+```
+
+### Paso 3: Configurar la Inyección de Dependencias en `Program.cs`
+
+Por último, registra `IPlantService` en el contenedor de dependencias para que el controlador reciba una instancia del servicio.
+
+```csharp
+using PlantAdoption.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Registrar el servicio de plantas
+builder.Services.AddScoped<IPlantService, PlantService>();
+
+var app = builder.Build();
+```
+
+### Resumen
+
+Con esta separación:
+
+- La lógica de negocio (adopción de plantas y consulta de datos) se maneja en `PlantService`, mientras que el controlador solo se encarga de recibir y responder a solicitudes HTTP.
+- Esto facilita las pruebas y el mantenimiento, permitiendo cambiar la lógica de negocio sin afectar el controlador.
+  
+El siguiente objetivo es **Implementar Inyección de Dependencias (DI)** de manera correcta en el controlador y en el servicio, asegurándonos de que todas las dependencias necesarias se inyecten correctamente, facilitando pruebas unitarias y mejorando la flexibilidad del código.
+
+### Problemas Actuales
+
+- El `DatabaseContext` y el `PlantService` no utilizan adecuadamente la inyección de dependencias.
+- `DatabaseContext` se crea directamente en `PlantService`, lo cual dificulta el testing y acopla las clases.
+
+### Solución: Configurar y Usar Inyección de Dependencias
+
+Para resolver estos problemas:
+
+1. **Registrar `DatabaseContext` en el Contenedor de Inyección de Dependencias**: Asegurarnos de que el contexto de la base de datos esté correctamente registrado.
+2. **Inyectar `DatabaseContext` en `PlantService` a través de DI**: Modificar `PlantService` para recibir `DatabaseContext` mediante inyección de dependencias en el constructor.
+3. **Inyectar `IPlantService` en `PlantController`**: El controlador también debería depender de `IPlantService` a través de DI.
+
+### Paso 1: Configurar `DatabaseContext` y `PlantService` en `Program.cs`
+
+Primero, registra `DatabaseContext` y `IPlantService` en el contenedor de servicios de .NET en `Program.cs`:
+
+```csharp
+using PlantAdoption.Data;
+using PlantAdoption.Services;
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Registrar DatabaseContext
+builder.Services.AddDbContext<DatabaseContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Registrar el servicio de plantas
+builder.Services.AddScoped<IPlantService, PlantService>();
+
+var app = builder.Build();
+```
+
+### Paso 2: Inyectar Dependencias en `PlantService`
+
+Ahora que `DatabaseContext` está registrado en el contenedor de DI, modificamos `PlantService` para recibir `DatabaseContext` a través de su constructor, en lugar de crearlo directamente.
+
+```csharp
+using PlantAdoption.Data;
+using PlantAdoption.Models;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace PlantAdoption.Services
+{
+    public class PlantService : IPlantService
+    {
+        private readonly DatabaseContext _db;
+
+        // Inyección de dependencia de DatabaseContext
+        public PlantService(DatabaseContext db)
+        {
+            _db = db;
+        }
+
+        public IEnumerable<Plant> GetAllPlants()
+        {
+            return _db.Plants.ToList();
+        }
+
+        public Plant GetPlantById(int id)
+        {
+            return _db.Plants.Find(id);
+        }
+
+        public void AdoptPlant(Plant plant)
+        {
+            plant.AdoptionDate = DateTime.Now;
+            _db.Plants.Add(plant);
+            _db.SaveChanges();
+        }
+    }
+}
+```
+
+### Paso 3: Inyectar `IPlantService` en `PlantController`
+
+Modificamos el controlador para que reciba `IPlantService` a través de su constructor, utilizando la inyección de dependencias configurada en `Program.cs`.
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using PlantAdoption.Models;
+using PlantAdoption.Services;
+
+namespace PlantAdoption.Controllers
+{
+    public class PlantController : Controller
+    {
+        private readonly IPlantService _plantService;
+
+        // Inyección de dependencia de IPlantService
+        public PlantController(IPlantService plantService)
+        {
+            _plantService = plantService;
+        }
+
+        public IActionResult Index()
+        {
+            var plantsList = _plantService.GetAllPlants();
+            return View(plantsList);
+        }
+
+        public IActionResult Details(int id)
+        {
+            var plant = _plantService.GetPlantById(id);
+            if (plant == null)
+            {
+                return NotFound("Planta no encontrada");
+            }
+            return View(plant);
+        }
+
+        [HttpPost]
+        public IActionResult Adopt(Plant plant)
+        {
+            if (!ModelState.IsValid)
+            {
+                return View(plant);
+            }
+
+            _plantService.AdoptPlant(plant);
+            return RedirectToAction("Index");
+        }
+    }
+}
+```
+
+### Beneficios de esta Configuración
+
+- **Reducción de Acoplamiento**: `DatabaseContext` y `PlantService` son gestionados por el contenedor de DI, lo que hace que sean fácilmente intercambiables o simulables para pruebas.
+- **Facilidad de Testing**: Al recibir `IPlantService` como una dependencia en el controlador, podemos simular `IPlantService` para probar el controlador sin necesidad de una base de datos real.
+- **Código Limpio y Modular**: La inyección de dependencias hace que cada clase dependa de abstracciones en lugar de implementaciones específicas, siguiendo las mejores prácticas de diseño.
+
+El siguiente objetivo es **Optimizar las consultas a la base de datos**. En el código actual, hay consultas ineficientes que afectan el rendimiento de la aplicación, como la ejecución de consultas en bucles, lo que aumenta la carga en la base de datos.
+
+### Problemas Actuales
+
+En el método `Index` del controlador, se están realizando múltiples consultas dentro de un bucle:
+
+```csharp
+var plantsList = new List<Plant>();
+foreach (var plantId in _db.Plants)
+{
+    plantsList.Add(_db.Plants.Find(plantId));
+}
+```
+
+Este código ejecuta una consulta para cada planta, lo cual es muy ineficiente, especialmente si hay muchas plantas en la base de datos.
+
+### Solución: Consultas Optimizadas
+
+Podemos mejorar el rendimiento al realizar una sola consulta para obtener todos los registros de plantas, en lugar de hacerlo en un bucle. Usaremos `ToList()` para cargar todos los registros en una sola consulta.
+
+### Modificación en el Servicio `PlantService`
+
+Como ya movimos la lógica de negocio a `PlantService`, hacemos esta optimización directamente en el servicio.
+
+```csharp
+using System.Collections.Generic;
+using System.Linq;
+using PlantAdoption.Data;
+using PlantAdoption.Models;
+
+namespace PlantAdoption.Services
+{
+    public class PlantService : IPlantService
+    {
+        private readonly DatabaseContext _db;
+
+        public PlantService(DatabaseContext db)
+        {
+            _db = db;
+        }
+
+        public IEnumerable<Plant> GetAllPlants()
+        {
+            // Consulta optimizada para obtener todas las plantas de una sola vez
+            return _db.Plants.ToList();
+        }
+
+        public Plant GetPlantById(int id)
+        {
+            return _db.Plants.Find(id);
+        }
+
+        public void AdoptPlant(Plant plant)
+        {
+            plant.AdoptionDate = DateTime.Now;
+            _db.Plants.Add(plant);
+            _db.SaveChanges();
+        }
+    }
+}
+```
+
+### Uso en el Controlador
+
+Con esta modificación, el controlador sigue llamando a `GetAllPlants()` del servicio, pero ahora el servicio está optimizado para obtener todos los registros en una sola consulta.
+
+```csharp
+public IActionResult Index()
+{
+    // Llamada al servicio que ya contiene la consulta optimizada
+    var plantsList = _plantService.GetAllPlants();
+    return View(plantsList);
+}
+```
+
+### Beneficios de la Optimización
+
+- **Menos Carga en la Base de Datos**: Al realizar una sola consulta, reducimos la cantidad de interacciones con la base de datos, mejorando la eficiencia.
+- **Rendimiento Mejorado**: La consulta optimizada es mucho más rápida, especialmente cuando el número de plantas en la base de datos es grande.
+- **Código Más Limpio y Fácil de Leer**: Al eliminar el bucle y realizar una sola consulta, el código se vuelve más legible.
+
+El siguiente objetivo es **Manejar excepciones de forma adecuada**. Actualmente, el código no maneja excepciones, lo cual puede provocar que la aplicación falle de forma inesperada y sin mensajes claros para el usuario.
+
+### Problemas Actuales
+
+En el método `Details`, por ejemplo, cuando no se encuentra una planta, se lanza una excepción sin manejar:
+
+```csharp
+var plant = _plantService.GetPlantById(id);
+if (plant == null)
+{
+    throw new Exception("Planta no encontrada"); // Sin manejo de excepciones
+}
+```
+
+Lanzar excepciones sin capturarlas es una mala práctica, ya que el usuario recibe un mensaje de error técnico en lugar de uno claro y útil.
+
+### Solución: Implementar Manejo de Excepciones con Bloques `try-catch`
+
+Para mejorar el código, encapsularemos las llamadas a los métodos del servicio en bloques `try-catch`, permitiendo capturar y manejar errores de forma controlada.
+
+### Modificación en `PlantController`
+
+Agregaremos el manejo de excepciones en los métodos `Details` y `Adopt` del controlador:
+
+```csharp
+public IActionResult Details(int id)
+{
+    try
+    {
+        var plant = _plantService.GetPlantById(id);
+        if (plant == null)
+        {
+            return NotFound("Planta no encontrada");
+        }
+        return View(plant);
+    }
+    catch (Exception ex)
+    {
+        // Registrar el error (en una aplicación real, sería ideal usar un sistema de logging como ILogger)
+        Console.WriteLine($"Error en Details: {ex.Message}");
+        // Mostrar un mensaje de error genérico al usuario
+        return StatusCode(500, "Ocurrió un error al intentar cargar la planta.");
+    }
+}
+
+[HttpPost]
+public IActionResult Adopt(Plant plant)
+{
+    if (!ModelState.IsValid)
+    {
+        return View(plant);
+    }
+
+    try
+    {
+        _plantService.AdoptPlant(plant);
+        return RedirectToAction("Index");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error en Adopt: {ex.Message}");
+        return StatusCode(500, "Ocurrió un error al intentar adoptar la planta.");
+    }
+}
+```
+
+### Detalles Importantes
+
+1. **Bloques `try-catch`**: Al envolver las operaciones críticas en bloques `try-catch`, podemos interceptar cualquier excepción que ocurra y manejarla de una manera controlada.
+2. **Mensajes de Error Personalizados**: Se agregaron mensajes claros para los casos de error, de modo que el usuario reciba retroalimentación adecuada sin ver detalles técnicos.
+3. **Log de Errores**: Aquí se usa `Console.WriteLine()` como ejemplo. En una aplicación en producción, es recomendable usar un sistema de logging como `ILogger` para almacenar estos errores en un archivo o sistema de monitoreo.
+
+### Beneficios de Manejar Excepciones
+
+- **Experiencia de Usuario Mejorada**: Los usuarios recibirán mensajes claros y amigables en lugar de mensajes de error técnicos.
+- **Mantenimiento y Depuración**: Facilita el monitoreo de errores en producción, permitiendo una respuesta rápida a problemas.
+- **Estabilidad de la Aplicación**: La aplicación se vuelve más robusta y menos propensa a caídas inesperadas.
+
+El siguiente objetivo es **Validar entradas de usuario en el modelo y el controlador**. Actualmente, el código no valida adecuadamente las entradas, lo que lo hace vulnerable a errores y posibles problemas de seguridad. Implementaremos validaciones tanto en el modelo como en el controlador para asegurar que los datos recibidos sean válidos antes de procesarlos.
+
+### Problemas Actuales
+
+1. En el método `Details`, no se valida si el `id` es un valor válido (por ejemplo, un valor negativo).
+2. En el método `Adopt`, no se realiza una validación detallada del modelo `Plant`.
+
+### Solución: Agregar Validaciones en el Modelo y en el Controlador
+
+1. **Validaciones en el Modelo**: Usaremos atributos de validación para definir restricciones en el modelo `Plant`.
+2. **Validaciones en el Controlador**: Realizaremos verificaciones adicionales en los métodos del controlador, como validar el `id` en `Details`.
+
+### Paso 1: Validaciones en el Modelo `Plant`
+
+Primero, agregamos anotaciones de validación en el modelo `Plant` para asegurar que los datos cumplan con ciertos requisitos.
+
+```csharp
+using System.ComponentModel.DataAnnotations;
+
+namespace PlantAdoption.Models
+{
+    public class Plant
+    {
+        public int Id { get; set; }
+
+        [Required(ErrorMessage = "El nombre de la planta es obligatorio")]
+        [StringLength(100, ErrorMessage = "El nombre no puede superar los 100 caracteres")]
+        public string Name { get; set; }
+
+        [Required(ErrorMessage = "El tipo de planta es obligatorio")]
+        [StringLength(50, ErrorMessage = "El tipo no puede superar los 50 caracteres")]
+        public string Type { get; set; }
+
+        [Range(1, 1000, ErrorMessage = "La cantidad de agua debe estar entre 1 y 1000 ml")]
+        public int WaterRequirement { get; set; }
+
+        public DateTime? AdoptionDate { get; set; }
+    }
+}
+```
+
+### Paso 2: Validaciones en el Controlador
+
+En el controlador, verificamos el `ModelState` para asegurarnos de que el modelo es válido antes de continuar. También validamos el `id` en el método `Details` para asegurar que sea un valor positivo.
+
+```csharp
+public IActionResult Details(int id)
+{
+    // Validación de ID para asegurar que sea un valor positivo
+    if (id <= 0)
+    {
+        return BadRequest("ID de planta inválido");
+    }
+
+    try
+    {
+        var plant = _plantService.GetPlantById(id);
+        if (plant == null)
+        {
+            return NotFound("Planta no encontrada");
+        }
+        return View(plant);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error en Details: {ex.Message}");
+        return StatusCode(500, "Ocurrió un error al intentar cargar la planta.");
+    }
+}
+
+[HttpPost]
+public IActionResult Adopt(Plant plant)
+{
+    // Verificar que el modelo es válido
+    if (!ModelState.IsValid)
+    {
+        return View(plant);
+    }
+
+    try
+    {
+        _plantService.AdoptPlant(plant);
+        return RedirectToAction("Index");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error en Adopt: {ex.Message}");
+        return StatusCode(500, "Ocurrió un error al intentar adoptar la planta.");
+    }
+}
+```
+
+### Beneficios de la Validación
+
+- **Seguridad Mejorada**: Validar entradas reduce la posibilidad de inyecciones y asegura que los datos sean consistentes.
+- **Prevención de Errores**: Evita errores de datos inválidos antes de que lleguen al servicio o a la base de datos.
+- **Mejor Experiencia de Usuario**: Proporciona mensajes de error claros para ayudar a los usuarios a corregir datos incorrectos.
+
+El siguiente objetivo es **Utilizar Data Transfer Objects (DTOs) en lugar de enviar modelos completos a la vista**. Actualmente, el controlador pasa el modelo completo `Plant` a las vistas, lo que puede exponer datos innecesarios o sensibles. Usar DTOs permite enviar solo la información necesaria y mejorar la seguridad y rendimiento de la aplicación.
+
+### Problemas Actuales
+
+Actualmente, el modelo `Plant` se envía directamente desde el servicio al controlador y luego a la vista. Esto puede provocar exposición de datos innecesarios o sensibles, además de aumentar el peso de las respuestas en la aplicación.
+
+### Solución: Crear y Utilizar DTOs
+
+1. **Crear DTOs**: Creamos un DTO que contiene solo las propiedades necesarias para las vistas.
+2. **Mapear el Modelo al DTO**: Agregamos la conversión entre el modelo `Plant` y el DTO en el servicio `PlantService`.
+3. **Modificar el Controlador para Utilizar el DTO**: Ajustamos el controlador para que solo envíe el DTO a la vista.
+
+### Paso 1: Crear un DTO para `Plant`
+
+En una carpeta llamada `DTOs`, crea un archivo `PlantDTO.cs`:
+
+```csharp
+namespace PlantAdoption.DTOs
+{
+    public class PlantDTO
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public string Type { get; set; }
+        public DateTime? AdoptionDate { get; set; }
+    }
+}
+```
+
+### Paso 2: Modificar el Servicio para Mapear el Modelo al DTO
+
+En `PlantService`, modificamos los métodos para que devuelvan `PlantDTO` en lugar de `Plant`. Realizamos la conversión de `Plant` a `PlantDTO` aquí.
+
+```csharp
+using System.Collections.Generic;
+using System.Linq;
+using PlantAdoption.Data;
+using PlantAdoption.DTOs;
+using PlantAdoption.Models;
+
+namespace PlantAdoption.Services
+{
+    public class PlantService : IPlantService
+    {
+        private readonly DatabaseContext _db;
+
+        public PlantService(DatabaseContext db)
+        {
+            _db = db;
+        }
+
+        public IEnumerable<PlantDTO> GetAllPlants()
+        {
+            // Mapeo de Plant a PlantDTO
+            return _db.Plants.Select(p => new PlantDTO
+            {
+                Id = p.Id,
+                Name = p.Name,
+                Type = p.Type,
+                AdoptionDate = p.AdoptionDate
+            }).ToList();
+        }
+
+        public PlantDTO GetPlantById(int id)
+        {
+            var plant = _db.Plants.Find(id);
+            if (plant == null) return null;
+
+            // Mapeo manual de Plant a PlantDTO
+            return new PlantDTO
+            {
+                Id = plant.Id,
+                Name = plant.Name,
+                Type = plant.Type,
+                AdoptionDate = plant.AdoptionDate
+            };
+        }
+
+        public void AdoptPlant(Plant plant)
+        {
+            plant.AdoptionDate = DateTime.Now;
+            _db.Plants.Add(plant);
+            _db.SaveChanges();
+        }
+    }
+}
+```
+
+### Paso 3: Modificar el Controlador para Utilizar `PlantDTO`
+
+Finalmente, ajustamos el controlador para usar `PlantDTO` en lugar de `Plant` al enviar datos a las vistas.
+
+```csharp
+public IActionResult Index()
+{
+    // Llamada al servicio para obtener PlantDTO en lugar del modelo completo
+    var plantsList = _plantService.GetAllPlants();
+    return View(plantsList);
+}
+
+public IActionResult Details(int id)
+{
+    if (id <= 0)
+    {
+        return BadRequest("ID de planta inválido");
+    }
+
+    try
+    {
+        var plantDTO = _plantService.GetPlantById(id);
+        if (plantDTO == null)
+        {
+            return NotFound("Planta no encontrada");
+        }
+        return View(plantDTO);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error en Details: {ex.Message}");
+        return StatusCode(500, "Ocurrió un error al intentar cargar la planta.");
+    }
+}
+```
+
+### Beneficios de Usar DTOs
+
+- **Control de Datos**: Permite enviar solo los datos necesarios, reduciendo el riesgo de exponer información sensible o innecesaria.
+- **Mejora de Rendimiento**: Se envían menos datos a la vista, lo que puede reducir el tiempo de carga.
+- **Facilita el Mantenimiento**: Si se añaden nuevas propiedades al modelo, no es necesario actualizarlas en las vistas, solo en el DTO.
+
+El siguiente objetivo es **Implementar mapeo automático (AutoMapper) para la conversión de datos**. Actualmente, estamos realizando manualmente la conversión entre el modelo `Plant` y `PlantDTO`, lo cual genera código repetitivo y reduce la legibilidad. Con AutoMapper, podemos automatizar este proceso, simplificando el código y reduciendo errores.
+
+### Instalación y Configuración de AutoMapper
+
+1. **Instalar AutoMapper**: Primero, instala el paquete de AutoMapper para .NET mediante NuGet en Visual Studio o desde la consola de administración de paquetes:
+
+   ```bash
+   dotnet add package AutoMapper.Extensions.Microsoft.DependencyInjection
+   ```
+
+2. **Registrar AutoMapper en `Program.cs`**: En `Program.cs`, registramos AutoMapper en el contenedor de servicios.
+
+   ```csharp
+   using AutoMapper;
+
+   var builder = WebApplication.CreateBuilder(args);
+
+   // Configuración de AutoMapper
+   builder.Services.AddAutoMapper(AppDomain.CurrentDomain.GetAssemblies());
+
+   var app = builder.Build();
+   ```
+
+### Paso 1: Crear el Perfil de Mapeo
+
+En una nueva carpeta llamada `Mappings`, crea un archivo `MappingProfile.cs` para definir los mapeos entre `Plant` y `PlantDTO`.
+
+```csharp
+using AutoMapper;
+using PlantAdoption.Models;
+using PlantAdoption.DTOs;
+
+namespace PlantAdoption.Mappings
+{
+    public class MappingProfile : Profile
+    {
+        public MappingProfile()
+        {
+            // Configuración de mapeo entre Plant y PlantDTO
+            CreateMap<Plant, PlantDTO>();
+            CreateMap<PlantDTO, Plant>();
+        }
+    }
+}
+```
+
+### Paso 2: Usar AutoMapper en `PlantService`
+
+Con AutoMapper configurado, podemos eliminar el mapeo manual de `Plant` a `PlantDTO` en `PlantService` y usar AutoMapper en su lugar. Inyectamos `IMapper` en el servicio y lo usamos para mapear automáticamente entre `Plant` y `PlantDTO`.
+
+```csharp
+using AutoMapper;
+using PlantAdoption.Data;
+using PlantAdoption.DTOs;
+using PlantAdoption.Models;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace PlantAdoption.Services
+{
+    public class PlantService : IPlantService
+    {
+        private readonly DatabaseContext _db;
+        private readonly IMapper _mapper;
+
+        public PlantService(DatabaseContext db, IMapper mapper)
+        {
+            _db = db;
+            _mapper = mapper;
+        }
+
+        public IEnumerable<PlantDTO> GetAllPlants()
+        {
+            var plants = _db.Plants.ToList();
+            return _mapper.Map<IEnumerable<PlantDTO>>(plants);
+        }
+
+        public PlantDTO GetPlantById(int id)
+        {
+            var plant = _db.Plants.Find(id);
+            return plant == null ? null : _mapper.Map<PlantDTO>(plant);
+        }
+
+        public void AdoptPlant(Plant plant)
+        {
+            plant.AdoptionDate = DateTime.Now;
+            _db.Plants.Add(plant);
+            _db.SaveChanges();
+        }
+    }
+}
+```
+
+### Paso 3: Modificación en el Controlador
+
+No es necesario realizar ningún cambio en el controlador, ya que este sigue recibiendo `PlantDTO` desde el servicio. AutoMapper se encarga de las conversiones, manteniendo el controlador limpio.
+
+```csharp
+public IActionResult Index()
+{
+    var plantsList = _plantService.GetAllPlants();
+    return View(plantsList);
+}
+
+public IActionResult Details(int id)
+{
+    if (id <= 0)
+    {
+        return BadRequest("ID de planta inválido");
+    }
+
+    try
+    {
+        var plantDTO = _plantService.GetPlantById(id);
+        if (plantDTO == null)
+        {
+            return NotFound("Planta no encontrada");
+        }
+        return View(plantDTO);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error en Details: {ex.Message}");
+        return StatusCode(500, "Ocurrió un error al intentar cargar la planta.");
+    }
+}
+```
+
+### Beneficios de Usar AutoMapper
+
+- **Reducción de Código Repetitivo**: AutoMapper realiza el mapeo automáticamente, eliminando código redundante.
+- **Menor Propensión a Errores**: AutoMapper maneja las conversiones, lo que reduce la probabilidad de errores al mapear propiedades manualmente.
+- **Escalabilidad**: Si se agregan nuevas propiedades, solo es necesario actualizar el perfil de mapeo sin cambiar todos los métodos de conversión.
+
+El siguiente objetivo es **Mejorar el manejo del ciclo de vida de los objetos en el controlador**. Esto es importante para evitar fugas de memoria y asegurar que los recursos se liberen adecuadamente.
+
+### Problemas Actuales
+
+En el código original, `DatabaseContext` se libera manualmente en el método `Dispose` del controlador. Sin embargo, con la inyección de dependencias de .NET, es preferible que el sistema gestione automáticamente el ciclo de vida de los objetos, eliminando la necesidad de manejar la disposición manualmente.
+
+Código original:
+
+```csharp
+protected override void Dispose(bool disposing)
+{
+    if (disposing)
+    {
+        // Liberación de recursos no realizada correctamente
+        _db.Dispose();
+    }
+    base.Dispose(disposing);
+}
+```
+
+Este enfoque es problemático porque `DatabaseContext` está gestionado por el contenedor de DI como un servicio de ámbito (`Scoped`), lo que significa que se crea y destruye automáticamente al final de cada solicitud HTTP.
+
+### Solución: Eliminar el Método `Dispose` y Dejar que .NET Maneje el Ciclo de Vida
+
+Al utilizar la inyección de dependencias, .NET se encarga de liberar el `DatabaseContext` y otros servicios al final del ciclo de vida de la solicitud. Por lo tanto, no necesitamos sobreescribir el método `Dispose` en el controlador.
+
+1. **Eliminar el Método `Dispose`** en el controlador.
+2. **Mantener la Configuración de DI** de `DatabaseContext` y `IPlantService` en `Program.cs` para asegurar que .NET administre automáticamente el ciclo de vida de los objetos.
+
+### Código Actualizado del Controlador sin `Dispose`
+
+El controlador se simplifica y queda más limpio sin el método `Dispose`, confiando en la inyección de dependencias para manejar el ciclo de vida de los objetos:
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using PlantAdoption.DTOs;
+using PlantAdoption.Services;
+using System;
+
+namespace PlantAdoption.Controllers
+{
+    public class PlantController : Controller
+    {
+        private readonly IPlantService _plantService;
+
+        public PlantController(IPlantService plantService)
+        {
+            _plantService = plantService;
+        }
+
+        public IActionResult Index()
+        {
+            var plantsList = _plantService.GetAllPlants();
+            return View(plantsList);
+        }
+
+        public IActionResult Details(int id)
+        {
+            if (id <= 0)
+            {
+                return BadRequest("ID de planta inválido");
+            }
+
+            try
+            {
+                var plantDTO = _plantService.GetPlantById(id);
+                if (plantDTO == null)
+                {
+                    return NotFound("Planta no encontrada");
+                }
+                return View(plantDTO);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error en Details: {ex.Message}");
+                return StatusCode(500, "Ocurrió un error al intentar cargar la planta.");
+            }
+        }
+
+        [HttpPost]
+        public IActionResult Adopt(PlantDTO plant)
+        {
+            if (!ModelState.IsValid)
+            {
+                return View(plant);
+            }
+
+            try
+            {
+                _plantService.AdoptPlant(plant);
+                return RedirectToAction("Index");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error en Adopt: {ex.Message}");
+                return StatusCode(500, "Ocurrió un error al intentar adoptar la planta.");
+            }
+        }
+    }
+}
+```
+
+### Beneficios de Dejar que .NET Maneje el Ciclo de Vida
+
+- **Reducción de Código**: Elimina código innecesario, haciendo que el controlador sea más limpio y fácil de leer.
+- **Eficiencia de Memoria**: El sistema de DI de .NET se encarga de la liberación de recursos, evitando fugas de memoria y mejorando el rendimiento.
+- **Cumplimiento de Buenas Prácticas**: Este enfoque sigue las mejores prácticas para el manejo de recursos en aplicaciones ASP.NET Core.
+
+El siguiente objetivo es **Aplicar principios SOLID**, con un enfoque en el principio de **Responsabilidad Única (SRP)** y el de **Abierto/Cerrado (OCP)**. Estos principios mejoran la organización del código, facilitando su mantenimiento, extensión y pruebas.
+
+### Problemas Actuales
+
+1. **Responsabilidad Única (SRP)**: El servicio `PlantService` maneja tanto la lógica de negocio como el acceso a datos, lo cual debería estar separado para seguir el principio de responsabilidad única. Por ejemplo, `PlantService` está gestionando detalles de adopción y consulta de datos al mismo tiempo.
+2. **Abierto/Cerrado (OCP)**: Si queremos cambiar la lógica de acceso a datos o agregar nuevas operaciones, tendríamos que modificar directamente `PlantService`, violando el principio de abierto/cerrado, que establece que las clases deben estar abiertas para extensión pero cerradas para modificación.
+
+### Solución: Refactorizar el Código para Cumplir con SRP y OCP
+
+1. **Dividir las Responsabilidades en el Servicio**: Crearemos un repositorio para manejar el acceso a datos de `Plant`, permitiendo que `PlantService` se concentre únicamente en la lógica de negocio.
+2. **Uso de Interfaces para Cumplir con OCP**: Definiremos interfaces para el repositorio y el servicio, lo que permitirá implementar nuevas funcionalidades sin modificar las clases originales.
+
+### Paso 1: Crear un Repositorio para `Plant`
+
+En una nueva carpeta llamada `Repositories`, crea una interfaz `IPlantRepository` que define las operaciones de acceso a datos para `Plant`.
+
+#### Interfaz `IPlantRepository`
+
+```csharp
+using PlantAdoption.Models;
+using System.Collections.Generic;
+
+namespace PlantAdoption.Repositories
+{
+    public interface IPlantRepository
+    {
+        IEnumerable<Plant> GetAll();
+        Plant GetById(int id);
+        void Add(Plant plant);
+    }
+}
+```
+
+#### Implementación `PlantRepository`
+
+Luego, implementamos `IPlantRepository` en una clase `PlantRepository`, que se encargará de las operaciones de acceso a datos usando `DatabaseContext`.
+
+```csharp
+using PlantAdoption.Data;
+using PlantAdoption.Models;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace PlantAdoption.Repositories
+{
+    public class PlantRepository : IPlantRepository
+    {
+        private readonly DatabaseContext _db;
+
+        public PlantRepository(DatabaseContext db)
+        {
+            _db = db;
+        }
+
+        public IEnumerable<Plant> GetAll()
+        {
+            return _db.Plants.ToList();
+        }
+
+        public Plant GetById(int id)
+        {
+            return _db.Plants.Find(id);
+        }
+
+        public void Add(Plant plant)
+        {
+            _db.Plants.Add(plant);
+            _db.SaveChanges();
+        }
+    }
+}
+```
+
+### Paso 2: Modificar `PlantService` para Usar el Repositorio
+
+Ahora, `PlantService` se enfocará únicamente en la lógica de negocio y delegará el acceso a datos a `PlantRepository`.
+
+```csharp
+using AutoMapper;
+using PlantAdoption.DTOs;
+using PlantAdoption.Models;
+using PlantAdoption.Repositories;
+using System.Collections.Generic;
+
+namespace PlantAdoption.Services
+{
+    public class PlantService : IPlantService
+    {
+        private readonly IPlantRepository _plantRepository;
+        private readonly IMapper _mapper;
+
+        public PlantService(IPlantRepository plantRepository, IMapper mapper)
+        {
+            _plantRepository = plantRepository;
+            _mapper = mapper;
+        }
+
+        public IEnumerable<PlantDTO> GetAllPlants()
+        {
+            var plants = _plantRepository.GetAll();
+            return _mapper.Map<IEnumerable<PlantDTO>>(plants);
+        }
+
+        public PlantDTO GetPlantById(int id)
+        {
+            var plant = _plantRepository.GetById(id);
+            return plant == null ? null : _mapper.Map<PlantDTO>(plant);
+        }
+
+        public void AdoptPlant(PlantDTO plantDTO)
+        {
+            var plant = _mapper.Map<Plant>(plantDTO);
+            plant.AdoptionDate = DateTime.Now;
+            _plantRepository.Add(plant);
+        }
+    }
+}
+```
+
+### Paso 3: Registrar el Repositorio en `Program.cs`
+
+Finalmente, registra `IPlantRepository` en el contenedor de dependencias para que `PlantService` reciba una instancia del repositorio.
+
+```csharp
+using PlantAdoption.Repositories;
+using PlantAdoption.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Registro del contexto de base de datos, repositorio y servicio
+builder.Services.AddDbContext<DatabaseContext>();
+builder.Services.AddScoped<IPlantRepository, PlantRepository>();
+builder.Services.AddScoped<IPlantService, PlantService>();
+builder.Services.AddAutoMapper(AppDomain.CurrentDomain.GetAssemblies());
+
+var app = builder.Build();
+```
+
+### Beneficios de Aplicar SRP y OCP
+
+- **Código Modular y Fácil de Mantener**: Cada clase tiene una única responsabilidad, lo que hace que el código sea más modular y fácil de mantener.
+- **Extensibilidad**: Cumplimos con el principio de abierto/cerrado, permitiendo extender funcionalidades (como implementar un nuevo tipo de repositorio) sin modificar las clases existentes.
+- **Separación de Lógica de Negocios y Acceso a Datos**: El servicio se enfoca en la lógica de negocio y el repositorio en el acceso a datos, cumpliendo con SRP.
+
+El último objetivo es **Añadir comentarios y mejorar la documentación del código**. Esto facilita el mantenimiento y comprensión del código, especialmente en proyectos colaborativos o de larga duración. A continuación, agregaremos comentarios explicativos en puntos clave del controlador, servicio y repositorio.
+
+### Ejemplo de Comentarios en el Código
+
+Aquí tienes el código con comentarios detallados para que cada parte sea clara y fácil de entender.
+
+#### Controlador `PlantController`
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using PlantAdoption.DTOs;
+using PlantAdoption.Services;
+using System;
+
+namespace PlantAdoption.Controllers
+{
+    public class PlantController : Controller
+    {
+        private readonly IPlantService _plantService;
+
+        // Constructor: Inyección de dependencia del servicio de plantas
+        public PlantController(IPlantService plantService)
+        {
+            _plantService = plantService;
+        }
+
+        // Acción para listar todas las plantas disponibles
+        public IActionResult Index()
+        {
+            // Llama al servicio para obtener la lista de plantas
+            var plantsList = _plantService.GetAllPlants();
+            return View(plantsList);
+        }
+
+        // Acción para mostrar los detalles de una planta específica
+        public IActionResult Details(int id)
+        {
+            // Validación del ID para asegurar que sea un valor positivo
+            if (id <= 0)
+            {
+                return BadRequest("ID de planta inválido");
+            }
+
+            try
+            {
+                // Llama al servicio para obtener los detalles de la planta
+                var plantDTO = _plantService.GetPlantById(id);
+                if (plantDTO == null)
+                {
+                    return NotFound("Planta no encontrada");
+                }
+                return View(plantDTO);
+            }
+            catch (Exception ex)
+            {
+                // Manejo de errores y registro en consola
+                Console.WriteLine($"Error en Details: {ex.Message}");
+                return StatusCode(500, "Ocurrió un error al intentar cargar la planta.");
+            }
+        }
+
+        // Acción para adoptar una planta
+        [HttpPost]
+        public IActionResult Adopt(PlantDTO plant)
+        {
+            // Verifica que el modelo sea válido
+            if (!ModelState.IsValid)
+            {
+                return View(plant);
+            }
+
+            try
+            {
+                // Llama al servicio para realizar la adopción de la planta
+                _plantService.AdoptPlant(plant);
+                return RedirectToAction("Index");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error en Adopt: {ex.Message}");
+                return StatusCode(500, "Ocurrió un error al intentar adoptar la planta.");
+            }
+        }
+    }
+}
+```
+
+#### Servicio `PlantService`
+
+```csharp
+using AutoMapper;
+using PlantAdoption.DTOs;
+using PlantAdoption.Models;
+using PlantAdoption.Repositories;
+using System.Collections.Generic;
+
+namespace PlantAdoption.Services
+{
+    public class PlantService : IPlantService
+    {
+        private readonly IPlantRepository _plantRepository;
+        private readonly IMapper _mapper;
+
+        // Constructor: Inyección de dependencias del repositorio y AutoMapper
+        public PlantService(IPlantRepository plantRepository, IMapper mapper)
+        {
+            _plantRepository = plantRepository;
+            _mapper = mapper;
+        }
+
+        // Método para obtener todas las plantas y mapearlas a PlantDTO
+        public IEnumerable<PlantDTO> GetAllPlants()
+        {
+            var plants = _plantRepository.GetAll();
+            return _mapper.Map<IEnumerable<PlantDTO>>(plants);
+        }
+
+        // Método para obtener una planta específica por ID y mapearla a PlantDTO
+        public PlantDTO GetPlantById(int id)
+        {
+            var plant = _plantRepository.GetById(id);
+            return plant == null ? null : _mapper.Map<PlantDTO>(plant);
+        }
+
+        // Método para adoptar una planta
+        public void AdoptPlant(PlantDTO plantDTO)
+        {
+            // Mapear PlantDTO a Plant antes de agregar
+            var plant = _mapper.Map<Plant>(plantDTO);
+            plant.AdoptionDate = DateTime.Now;
+            _plantRepository.Add(plant);
+        }
+    }
+}
+```
+
+#### Repositorio `PlantRepository`
+
+```csharp
+using PlantAdoption.Data;
+using PlantAdoption.Models;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace PlantAdoption.Repositories
+{
+    public class PlantRepository : IPlantRepository
+    {
+        private readonly DatabaseContext _db;
+
+        // Constructor: Inyección de dependencia del contexto de base de datos
+        public PlantRepository(DatabaseContext db)
+        {
+            _db = db;
+        }
+
+        // Método para obtener todas las plantas de la base de datos
+        public IEnumerable<Plant> GetAll()
+        {
+            return _db.Plants.ToList();
+        }
+
+        // Método para obtener una planta específica por su ID
+        public Plant GetById(int id)
+        {
+            return _db.Plants.Find(id);
+        }
+
+        // Método para agregar una nueva planta a la base de datos
+        public void Add(Plant plant)
+        {
+            _db.Plants.Add(plant);
+            _db.SaveChanges();
+        }
+    }
+}
+```
+
+### Beneficios de Documentar el Código
+
+- **Facilita el Mantenimiento**: Cualquier desarrollador puede entender rápidamente la función de cada método y clase.
+- **Mejora la Comprensión del Código**: La lógica de cada paso queda clara, facilitando el aprendizaje de nuevos miembros del equipo.
+- **Reduce Errores**: Los comentarios claros previenen malentendidos sobre el propósito del código, minimizando la probabilidad de errores al modificarlo.
