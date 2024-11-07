@@ -1,0 +1,562 @@
+### **1. Modelo `Plant` (Models/Plant.cs)**
+
+```csharp
+using System;
+using System.ComponentModel.DataAnnotations;
+
+namespace PlantAdoption.Models
+{
+    public class Plant
+    {
+        public int Id { get; set; }
+
+        [Required(ErrorMessage = "El nombre de la planta es obligatorio")]
+        [StringLength(100, ErrorMessage = "El nombre no puede superar los 100 caracteres")]
+        public string Name { get; set; }
+
+        [Required(ErrorMessage = "El tipo de planta es obligatorio")]
+        [StringLength(50, ErrorMessage = "El tipo no puede superar los 50 caracteres")]
+        public string Type { get; set; }
+
+        [Range(1, 1000, ErrorMessage = "La cantidad de agua debe estar entre 1 y 1000 ml")]
+        public int WaterRequirement { get; set; }
+
+        public DateTime? AdoptionDate { get; set; }
+    }
+}
+```
+
+---
+
+### **2. DTO `PlantDTO` (DTOs/PlantDTO.cs)**
+
+```csharp
+namespace PlantAdoption.DTOs
+{
+    public class PlantDTO
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public string Type { get; set; }
+        public DateTime? AdoptionDate { get; set; }
+    }
+}
+```
+
+---
+
+### **3. Contexto de Base de Datos `DatabaseContext` (Data/DatabaseContext.cs)**
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using PlantAdoption.Models;
+
+namespace PlantAdoption.Data
+{
+    public class DatabaseContext : DbContext
+    {
+        public DbSet<Plant> Plants { get; set; }
+
+        public DatabaseContext(DbContextOptions<DatabaseContext> options) : base(options)
+        {
+        }
+    }
+}
+```
+
+---
+
+### **4. Repositorio `IPlantRepository` y `PlantRepository` (Repositories/PlantRepository.cs)**
+
+#### Interfaz `IPlantRepository`
+
+```csharp
+using PlantAdoption.Models;
+using System.Collections.Generic;
+
+namespace PlantAdoption.Repositories
+{
+    public interface IPlantRepository
+    {
+        IEnumerable<Plant> GetAll();
+        Plant GetById(int id);
+        void Add(Plant plant);
+    }
+}
+```
+
+#### Implementación `PlantRepository`
+
+```csharp
+using PlantAdoption.Data;
+using PlantAdoption.Models;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace PlantAdoption.Repositories
+{
+    public class PlantRepository : IPlantRepository
+    {
+        private readonly DatabaseContext _db;
+
+        // Constructor: Inyección de dependencia del contexto de base de datos
+        public PlantRepository(DatabaseContext db)
+        {
+            _db = db;
+        }
+
+        // Método para obtener todas las plantas de la base de datos
+        public IEnumerable<Plant> GetAll()
+        {
+            return _db.Plants.ToList();
+        }
+
+        // Método para obtener una planta específica por su ID
+        public Plant GetById(int id)
+        {
+            return _db.Plants.Find(id);
+        }
+
+        // Método para agregar una nueva planta a la base de datos
+        public void Add(Plant plant)
+        {
+            _db.Plants.Add(plant);
+            _db.SaveChanges();
+        }
+    }
+}
+```
+
+---
+
+### **5. Servicio `IPlantService` y `PlantService` (Services/PlantService.cs)**
+
+#### Interfaz `IPlantService`
+
+```csharp
+using PlantAdoption.DTOs;
+using System.Collections.Generic;
+
+namespace PlantAdoption.Services
+{
+    public interface IPlantService
+    {
+        IEnumerable<PlantDTO> GetAllPlants();
+        PlantDTO GetPlantById(int id);
+        void AdoptPlant(PlantDTO plant);
+    }
+}
+```
+
+#### Implementación `PlantService`
+
+```csharp
+using AutoMapper;
+using PlantAdoption.DTOs;
+using PlantAdoption.Models;
+using PlantAdoption.Repositories;
+using System.Collections.Generic;
+
+namespace PlantAdoption.Services
+{
+    public class PlantService : IPlantService
+    {
+        private readonly IPlantRepository _plantRepository;
+        private readonly IMapper _mapper;
+
+        // Constructor: Inyección de dependencias del repositorio y AutoMapper
+        public PlantService(IPlantRepository plantRepository, IMapper mapper)
+        {
+            _plantRepository = plantRepository;
+            _mapper = mapper;
+        }
+
+        // Método para obtener todas las plantas y mapearlas a PlantDTO
+        public IEnumerable<PlantDTO> GetAllPlants()
+        {
+            var plants = _plantRepository.GetAll();
+            return _mapper.Map<IEnumerable<PlantDTO>>(plants);
+        }
+
+        // Método para obtener una planta específica por ID y mapearla a PlantDTO
+        public PlantDTO GetPlantById(int id)
+        {
+            var plant = _plantRepository.GetById(id);
+            return plant == null ? null : _mapper.Map<PlantDTO>(plant);
+        }
+
+        // Método para adoptar una planta
+        public void AdoptPlant(PlantDTO plantDTO)
+        {
+            var plant = _mapper.Map<Plant>(plantDTO);
+            plant.AdoptionDate = DateTime.Now;
+            _plantRepository.Add(plant);
+        }
+    }
+}
+```
+
+---
+
+### **6. Controlador `PlantController` (Controllers/PlantController.cs)**
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using PlantAdoption.DTOs;
+using PlantAdoption.Services;
+using System;
+
+namespace PlantAdoption.Controllers
+{
+    public class PlantController : Controller
+    {
+        private readonly IPlantService _plantService;
+
+        // Constructor: Inyección de dependencia del servicio de plantas
+        public PlantController(IPlantService plantService)
+        {
+            _plantService = plantService;
+        }
+
+        // Acción para listar todas las plantas disponibles
+        public IActionResult Index()
+        {
+            var plantsList = _plantService.GetAllPlants();
+            return View(plantsList);
+        }
+
+        // Acción para mostrar los detalles de una planta específica
+        public IActionResult Details(int id)
+        {
+            if (id <= 0)
+            {
+                return BadRequest("ID de planta inválido");
+            }
+
+            try
+            {
+                var plantDTO = _plantService.GetPlantById(id);
+                if (plantDTO == null)
+                {
+                    return NotFound("Planta no encontrada");
+                }
+                return View(plantDTO);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error en Details: {ex.Message}");
+                return StatusCode(500, "Ocurrió un error al intentar cargar la planta.");
+            }
+        }
+
+        // Acción para adoptar una planta
+        [HttpPost]
+        public IActionResult Adopt(PlantDTO plant)
+        {
+            if (!ModelState.IsValid)
+            {
+                return View(plant);
+            }
+
+            try
+            {
+                _plantService.AdoptPlant(plant);
+                return RedirectToAction("Index");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error en Adopt: {ex.Message}");
+                return StatusCode(500, "Ocurrió un error al intentar adoptar la planta.");
+            }
+        }
+    }
+}
+```
+
+---
+
+### **7. Perfil de Mapeo de AutoMapper (Mappings/MappingProfile.cs)**
+
+```csharp
+using AutoMapper;
+using PlantAdoption.Models;
+using PlantAdoption.DTOs;
+
+namespace PlantAdoption.Mappings
+{
+    public class MappingProfile : Profile
+    {
+        public MappingProfile()
+        {
+            CreateMap<Plant, PlantDTO>();
+            CreateMap<PlantDTO, Plant>();
+        }
+    }
+}
+```
+
+---
+
+### **8. Configuración en `Program.cs`**
+
+Registra todos los servicios y configuraciones necesarias en `Program.cs`:
+
+```csharp
+using PlantAdoption.Data;
+using PlantAdoption.Repositories;
+using PlantAdoption.Services;
+using AutoMapper;
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Configuración de la base de datos
+builder.Services.AddDbContext<DatabaseContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Registro de repositorios, servicios y AutoMapper
+builder.Services.AddScoped<IPlantRepository, PlantRepository>();
+builder.Services.AddScoped<IPlantService, PlantService>();
+builder.Services.AddAutoMapper(AppDomain.CurrentDomain.GetAssemblies());
+
+builder.Services.AddControllersWithViews();
+
+var app = builder.Build();
+
+// Configuración de middlewares
+app.UseStaticFiles();
+app.UseRouting();
+app.MapDefaultControllerRoute();
+
+app.Run();
+```
+
+Aquí tienes todo el código consolidado en un solo archivo, simulando la estructura de un proyecto MVC para .NET. Este código incluye todas las clases, interfaces y configuraciones necesarias en un solo archivo.
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using AutoMapper;
+
+namespace PlantAdoption
+{
+    // MODELO
+    public class Plant
+    {
+        public int Id { get; set; }
+
+        [Required(ErrorMessage = "El nombre de la planta es obligatorio")]
+        [StringLength(100, ErrorMessage = "El nombre no puede superar los 100 caracteres")]
+        public string Name { get; set; }
+
+        [Required(ErrorMessage = "El tipo de planta es obligatorio")]
+        [StringLength(50, ErrorMessage = "El tipo no puede superar los 50 caracteres")]
+        public string Type { get; set; }
+
+        [Range(1, 1000, ErrorMessage = "La cantidad de agua debe estar entre 1 y 1000 ml")]
+        public int WaterRequirement { get; set; }
+
+        public DateTime? AdoptionDate { get; set; }
+    }
+
+    // DTO
+    public class PlantDTO
+    {
+        public int Id { get; set; }
+        public string Name { get; set; }
+        public string Type { get; set; }
+        public DateTime? AdoptionDate { get; set; }
+    }
+
+    // DATABASE CONTEXT
+    public class DatabaseContext : DbContext
+    {
+        public DbSet<Plant> Plants { get; set; }
+
+        public DatabaseContext(DbContextOptions<DatabaseContext> options) : base(options) { }
+    }
+
+    // REPOSITORIO
+    public interface IPlantRepository
+    {
+        IEnumerable<Plant> GetAll();
+        Plant GetById(int id);
+        void Add(Plant plant);
+    }
+
+    public class PlantRepository : IPlantRepository
+    {
+        private readonly DatabaseContext _db;
+
+        public PlantRepository(DatabaseContext db)
+        {
+            _db = db;
+        }
+
+        public IEnumerable<Plant> GetAll() => _db.Plants.ToList();
+
+        public Plant GetById(int id) => _db.Plants.Find(id);
+
+        public void Add(Plant plant)
+        {
+            _db.Plants.Add(plant);
+            _db.SaveChanges();
+        }
+    }
+
+    // SERVICIO
+    public interface IPlantService
+    {
+        IEnumerable<PlantDTO> GetAllPlants();
+        PlantDTO GetPlantById(int id);
+        void AdoptPlant(PlantDTO plant);
+    }
+
+    public class PlantService : IPlantService
+    {
+        private readonly IPlantRepository _plantRepository;
+        private readonly IMapper _mapper;
+
+        public PlantService(IPlantRepository plantRepository, IMapper mapper)
+        {
+            _plantRepository = plantRepository;
+            _mapper = mapper;
+        }
+
+        public IEnumerable<PlantDTO> GetAllPlants()
+        {
+            var plants = _plantRepository.GetAll();
+            return _mapper.Map<IEnumerable<PlantDTO>>(plants);
+        }
+
+        public PlantDTO GetPlantById(int id)
+        {
+            var plant = _plantRepository.GetById(id);
+            return plant == null ? null : _mapper.Map<PlantDTO>(plant);
+        }
+
+        public void AdoptPlant(PlantDTO plantDTO)
+        {
+            var plant = _mapper.Map<Plant>(plantDTO);
+            plant.AdoptionDate = DateTime.Now;
+            _plantRepository.Add(plant);
+        }
+    }
+
+    // CONTROLADOR
+    public class PlantController : Controller
+    {
+        private readonly IPlantService _plantService;
+
+        public PlantController(IPlantService plantService)
+        {
+            _plantService = plantService;
+        }
+
+        public IActionResult Index()
+        {
+            var plantsList = _plantService.GetAllPlants();
+            return View(plantsList);
+        }
+
+        public IActionResult Details(int id)
+        {
+            if (id <= 0) return BadRequest("ID de planta inválido");
+
+            try
+            {
+                var plantDTO = _plantService.GetPlantById(id);
+                if (plantDTO == null) return NotFound("Planta no encontrada");
+                return View(plantDTO);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error en Details: {ex.Message}");
+                return StatusCode(500, "Ocurrió un error al intentar cargar la planta.");
+            }
+        }
+
+        [HttpPost]
+        public IActionResult Adopt(PlantDTO plant)
+        {
+            if (!ModelState.IsValid) return View(plant);
+
+            try
+            {
+                _plantService.AdoptPlant(plant);
+                return RedirectToAction("Index");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error en Adopt: {ex.Message}");
+                return StatusCode(500, "Ocurrió un error al intentar adoptar la planta.");
+            }
+        }
+    }
+
+    // MAPEOS
+    public class MappingProfile : Profile
+    {
+        public MappingProfile()
+        {
+            CreateMap<Plant, PlantDTO>();
+            CreateMap<PlantDTO, Plant>();
+        }
+    }
+
+    // CONFIGURACIÓN DE SERVICIOS
+    public class Startup
+    {
+        public void ConfigureServices(IServiceCollection services)
+        {
+            services.AddDbContext<DatabaseContext>(options =>
+                options.UseInMemoryDatabase("PlantDB")); // Cambia a SQL Server en producción
+
+            services.AddScoped<IPlantRepository, PlantRepository>();
+            services.AddScoped<IPlantService, PlantService>();
+            services.AddAutoMapper(AppDomain.CurrentDomain.GetAssemblies());
+            services.AddControllersWithViews();
+        }
+
+        public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+        {
+            if (env.IsDevelopment()) app.UseDeveloperExceptionPage();
+            else
+            {
+                app.UseExceptionHandler("/Home/Error");
+                app.UseHsts();
+            }
+
+            app.UseHttpsRedirection();
+            app.UseStaticFiles();
+            app.UseRouting();
+            app.UseAuthorization();
+
+            app.UseEndpoints(endpoints =>
+            {
+                endpoints.MapControllerRoute(
+                    name: "default",
+                    pattern: "{controller=Plant}/{action=Index}/{id?}");
+            });
+        }
+    }
+}
+```
+
+### Explicación
+
+Este código contiene:
+
+1. **Modelo (`Plant`) y DTO (`PlantDTO`)**: Representan las entidades de negocio y los datos que se enviarán a la vista.
+2. **Database Context (`DatabaseContext`)**: Configura la base de datos con Entity Framework.
+3. **Repositorio (`IPlantRepository` y `PlantRepository`)**: Gestiona el acceso a la base de datos para las operaciones de `Plant`.
+4. **Servicio (`IPlantService` y `PlantService`)**: Maneja la lógica de negocio y utiliza AutoMapper para mapear entre `Plant` y `PlantDTO`.
+5. **Controlador (`PlantController`)**: Controla la lógica de presentación y maneja las solicitudes HTTP para la adopción y consulta de plantas.
+6. **Perfil de Mapeo (`MappingProfile`)**: Define el mapeo entre `Plant` y `PlantDTO` usando AutoMapper.
+7. **Configuración de Servicios (`Startup`)**: Configura todos los servicios y dependencias del proyecto.
+
+Este archivo único simula la estructura completa del proyecto, aunque en una aplicación real se recomienda dividir en archivos separados para facilitar el mantenimiento y la organización.
